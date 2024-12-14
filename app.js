@@ -89,7 +89,7 @@ async function recordUserInput() {
         let silenceTimeout = null;
         
         // Voice detection parameters
-        const VOICE_THRESHOLD = 500;    // Adjust based on debug output
+        const VOICE_THRESHOLD = 300;    // Adjust based on debug output
         const ANALYSIS_WINDOW = 4410;    // 100ms at 44.1kHz
         let buffer = Buffer.alloc(0);
         
