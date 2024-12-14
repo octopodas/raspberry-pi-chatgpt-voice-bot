@@ -37,6 +37,7 @@ console.log(`Porcupine initialized with frameLength=${frameLength}, sampleRate=$
 // Function to handle ChatGPT conversation
 async function processConversation(input) {
     try {
+        console.log("chat input: ", input);
         const response = await axios.post(
             "https://api.openai.com/v1/chat/completions",
             {
@@ -70,16 +71,27 @@ async function recordUserInput() {
         console.log("Recording your message...");
         
         const recording = record.record({
-            sampleRate: 16000,
+            sampleRate: 44100,      // Higher sample rate
             channels: 1,
             audioType: 'wav',
             recorder: 'arecord',
             options: {
+                // Use specific arecord options for better quality
+                device: 'default',
+                format: 'S16_LE',   // Signed 16-bit Little Endian
+                rate: '44100',
+                channels: '1',
                 quiet: true
             }
         });
 
         const fileStream = fs.createWriteStream(audioFilePath);
+        let silenceTimeout = null;
+        
+        // Voice detection parameters
+        const VOICE_THRESHOLD = 500;    // Adjust based on debug output
+        const ANALYSIS_WINDOW = 4410;    // 100ms at 44.1kHz
+        let buffer = Buffer.alloc(0);
         
         fileStream.on('error', (err) => {
             console.error('Error writing to file:', err);
@@ -92,18 +104,65 @@ async function recordUserInput() {
             resolve(audioFilePath);
         });
         
-        recording.stream()
-            .on('error', (err) => {
-                console.error('Recording error:', err);
-                recording.stop();
-                reject(err);
-            })
-            .pipe(fileStream);
+        const audioStream = recording.stream();
+        
+        audioStream.on('data', (chunk) => {
+            // Append new data to buffer
+            buffer = Buffer.concat([buffer, chunk]);
+            
+            // Process complete windows
+            while (buffer.length >= ANALYSIS_WINDOW) {
+                const window = buffer.slice(0, ANALYSIS_WINDOW);
+                buffer = buffer.slice(ANALYSIS_WINDOW);
+                
+                // Calculate audio level for this window
+                let sum = 0;
+                let max = 0;
+                let min = 0;
+                
+                // Process as 16-bit PCM
+                for (let i = 0; i < window.length - 1; i += 2) {
+                    const sample = window.readInt16LE(i);
+                    sum += Math.abs(sample);
+                    max = Math.max(max, sample);
+                    min = Math.min(min, sample);
+                }
+                
+                const average = sum / (window.length / 2);
+                
+                // Debug output
+                console.log({
+                    avgLevel: average.toFixed(2),
+                    maxSample: max,
+                    minSample: min,
+                    bufferSize: buffer.length,
+                    isActive: average > VOICE_THRESHOLD
+                });
+                
+                // Voice detection logic
+                if (average > VOICE_THRESHOLD) {
+                    if (silenceTimeout) {
+                        clearTimeout(silenceTimeout);
+                        silenceTimeout = null;
+                    }
+                } else {
+                    if (!silenceTimeout) {
+                        silenceTimeout = setTimeout(() => {
+                            console.log("Voice pause detected, stopping recording.");
+                            recording.stop();
+                        }, 2000);
+                    }
+                }
+            }
+        });
 
-        setTimeout(() => {
+        audioStream.on('error', (err) => {
+            console.error('Recording error:', err);
             recording.stop();
-            console.log("Recording stopped.");
-        }, 5000);
+            reject(err);
+        });
+
+        audioStream.pipe(fileStream);
     });
 }
 
