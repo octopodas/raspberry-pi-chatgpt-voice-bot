@@ -1,5 +1,3 @@
-require('dotenv').config();
-
 const record = require("node-record-lpcm16");
 const axios = require("axios");
 // const say = require("say");
@@ -8,6 +6,8 @@ const FormData = require('form-data');
 const { Porcupine } = require("@picovoice/porcupine-node");
 const path = require('path');
 const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
+
+require('dotenv').config();
 
 // OpenAI API Key
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -18,6 +18,8 @@ const KEYWORD_FILE_PATH = "./porcupine-model/hi-chat_en_raspberry-pi_v3_0_0.ppn"
 // Initialize Porcupine
 let porcupine;
 try {
+    console.log("Initializing Porcupine with access key:", PORCUPINE_ACCESS_KEY ? "Key present" : "Key missing");
+    console.log("Using keyword file:", KEYWORD_FILE_PATH);
     porcupine = new Porcupine(
         PORCUPINE_ACCESS_KEY,
         [KEYWORD_FILE_PATH],
@@ -71,18 +73,18 @@ async function recordUserInput() {
         console.log("Recording your message...");
         
         const recording = record.record({
-            sampleRate: 44100,      // Higher sample rate
+            sampleRateHertz: 44100,  // Match the device's sample rate
             channels: 1,
+            encoding: 'signed-integer',
             audioType: 'wav',
-            recorder: 'arecord',
-            options: {
-                // Use specific arecord options for better quality
-                device: 'default',
-                format: 'S16_LE',   // Signed 16-bit Little Endian
-                rate: '44100',
-                channels: '1',
-                quiet: true
-            }
+            recordProgram: 'parec',
+            verbose: true,
+            recordParams: [
+                '--device=alsa_input.usb-Razer_Inc_Razer_Seiren_Mini_UC2119L03206637-00.mono-fallback',
+                '--format=s16le',
+                '--rate=44100',
+                '--channels=1'
+            ]
         });
 
         const fileStream = fs.createWriteStream(audioFilePath);
@@ -277,18 +279,35 @@ function startListening() {
     let audioBuffer = Buffer.alloc(0);
     let isProcessingVoice = false;
 
-    // Start the microphone
+    // Start the microphone using PulseAudio
     const mic = record.record({
-        sampleRate: 16000,
+        sampleRateHertz: 16000,  // Required by Porcupine
         channels: 1,
+        encoding: 'signed-integer',
+        recordProgram: 'parec',
+        verbose: true,  // Enable verbose logging
         audioType: 'raw',
-        recorder: 'arecord',
-        options: {
-            quiet: true
-        }
+        recordParams: [
+            '--device=alsa_input.usb-Razer_Inc_Razer_Seiren_Mini_UC2119L03206637-00.mono-fallback',
+            '--format=s16le',
+            '--rate=16000',
+            '--channels=1',
+            '--latency-msec=20',  // Lower latency
+            '--process-time-msec=10',  // Faster processing
+            '--volume=1.5'  // Increase input volume
+        ]
     });
 
-    mic.stream()
+    console.log("Microphone configuration:", {
+        device: 'alsa_input.usb-Razer_Inc_Razer_Seiren_Mini_UC2119L03206637-00.mono-fallback',
+        format: 's16le',
+        rate: 16000,
+        channels: 1
+    });
+
+    const audioStream = mic.stream();
+
+    audioStream
         .on('data', async (data) => {
             if (isProcessingVoice) return;
 
@@ -309,19 +328,28 @@ function startListening() {
                 for (let i = 0; i < frameLength; i++) {
                     frame[i] = frameBuffer.readInt16LE(i * bytesPerSample);
                 }
+                
+                // Add debug logging for audio frame
+                if (Math.random() < 0.01) { // Log ~1% of frames to avoid console spam
+                    console.log("Processing frame:", {
+                        frameLength: frame.length,
+                        expectedLength: frameLength,
+                        maxValue: Math.max(...frame),
+                        minValue: Math.min(...frame)
+                    });
+                }
 
                 // Process the frame with Porcupine
                 const keywordIndex = porcupine.process(frame);
                 if (keywordIndex >= 0 && !isProcessingVoice) {
                     // Wake word detected
                     console.log("Wake word detected!");
-                    // say.speak("Yes, how can I help you?");
                     
                     // Set flag to prevent multiple simultaneous recordings
                     isProcessingVoice = true;
 
                     try {
-                        // Wait a moment for the response to be spoken
+                        // Wait a moment before recording
                         await new Promise(resolve => setTimeout(resolve, 1500));
                         
                         // Record user's voice input
@@ -338,7 +366,6 @@ function startListening() {
                         fs.unlinkSync(audioFilePath);
                     } catch (error) {
                         console.error("Error processing voice input:", error);
-                        // say.speak("Sorry, there was an error with the recording. Please try again.");
                         await synthesizeSpeech("Sorry, there was an error with the recording. Please try again.");
                     } finally {
                         isProcessingVoice = false;
@@ -350,8 +377,15 @@ function startListening() {
             console.error("Microphone error:", err);
         });
 
+    // Handle process termination
+    process.on('SIGINT', () => {
+        console.log("Stopping recording...");
+        mic.stop();
+        process.exit();
+    });
+
     // Start recording
-    mic.start();
+    console.log("Starting wake word detection...");
 }
 
 // Verify environment variables are loaded
