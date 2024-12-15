@@ -2,11 +2,11 @@ require('dotenv').config();
 
 const record = require("node-record-lpcm16");
 const axios = require("axios");
-// const say = require("say");
 const fs = require("fs");
+const path = require('path');
 const FormData = require('form-data');
 const { Porcupine } = require("@picovoice/porcupine-node");
-const path = require('path');
+
 const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
 
 // OpenAI API Key
@@ -35,7 +35,7 @@ const sampleRate = porcupine.sampleRate;   // Should be 16000
 console.log(`Porcupine initialized with frameLength=${frameLength}, sampleRate=${sampleRate}`);
 
 // Function to handle ChatGPT conversation
-async function processConversation(input) {
+async function processConversation(input, language) {
     try {
         console.log("chat input: ", input);
         const response = await axios.post(
@@ -52,15 +52,14 @@ async function processConversation(input) {
         const chatResponse = response.data.choices[0].message.content;
         console.log("ChatGPT:", chatResponse);
 
-        // Speak the response
         // say.speak(chatResponse);
-        await synthesizeSpeech(chatResponse);
+        await synthesizeSpeech(chatResponse, language);
 
         return chatResponse;
     } catch (error) {
         console.error("Error communicating with ChatGPT:", error.message);
         // say.speak("Sorry, I couldn't process your request.");
-        await synthesizeSpeech("Sorry, I couldn't process your request.");
+        await synthesizeSpeech("Sorry, I couldn't process your request.", language);
     }
 }
 
@@ -77,7 +76,7 @@ async function recordUserInput() {
             recorder: 'arecord',
             options: {
                 // Use specific arecord options for better quality
-                device: 'default',
+                // device: 'hw:4,0',  // Razer Seiren Mini
                 format: 'S16_LE',   // Signed 16-bit Little Endian
                 rate: '44100',
                 channels: '1',
@@ -189,7 +188,7 @@ async function transcribeAudio(audioFilePath) {
             contentType: 'audio/wav'
         });
         formData.append('model', 'whisper-1');
-        formData.append('language', 'en');
+        formData.append('response_format', 'verbose_json');
 
         const response = await axios.post('https://api.openai.com/v1/audio/transcriptions', 
             formData,
@@ -204,7 +203,10 @@ async function transcribeAudio(audioFilePath) {
             }
         );
 
-        return response.data.text;
+        return {
+            text: response.data.text,
+            language: response.data.language
+        };
     } catch (error) {
         if (error.response) {
             // The request was made and the server responded with a status code
@@ -224,7 +226,7 @@ async function transcribeAudio(audioFilePath) {
 }
 
 // Function to synthesize speech using Google Cloud Text-to-Speech API
-async function synthesizeSpeech(text) {
+async function synthesizeSpeech(text, language) {
     try {
         const privateKey = process.env.GOOGLE_CLOUD_PRIVATE_KEY
                                         .replace(/\\n/g, '\n')
@@ -239,13 +241,56 @@ async function synthesizeSpeech(text) {
             projectId: process.env.GOOGLE_CLOUD_PROJECT
         });
 
+        // Map full language names to ISO codes
+        const languageNameMap = {
+            'english': 'en',
+            'spanish': 'es',
+            'french': 'fr',
+            'german': 'de',
+            'italian': 'it',
+            'portuguese': 'pt',
+            'dutch': 'nl',
+            'polish': 'pl',
+            'russian': 'ru',
+            'japanese': 'ja',
+            'korean': 'ko',
+            'chinese': 'zh'
+        };
+
+        // Map ISO codes to Google TTS language codes and voice names
+        const languageMap = {
+            'en': { code: 'en-US', voice: 'en-US-Studio-O' },
+            'es': { code: 'es-ES', voice: 'es-ES-Standard-A' },
+            'fr': { code: 'fr-FR', voice: 'fr-FR-Standard-A' },
+            'de': { code: 'de-DE', voice: 'de-DE-Standard-A' },
+            'it': { code: 'it-IT', voice: 'it-IT-Standard-A' },
+            'pt': { code: 'pt-PT', voice: 'pt-PT-Standard-A' },
+            'nl': { code: 'nl-NL', voice: 'nl-NL-Standard-A' },
+            'pl': { code: 'pl-PL', voice: 'pl-PL-Standard-A' },
+            'ru': { code: 'ru-RU', voice: 'ru-RU-Standard-A' },
+            'ja': { code: 'ja-JP', voice: 'ja-JP-Standard-A' },
+            'ko': { code: 'ko-KR', voice: 'ko-KR-Standard-A' },
+            'zh': { code: 'zh-CN', voice: 'zh-CN-Standard-A' }
+        };
+
+        // Convert full language name to ISO code
+        const langCode = languageNameMap[language.toLowerCase()] || 'en';
+        
+        // Get language settings or default to English
+        const langSettings = languageMap[langCode] || languageMap['en'];
+
+        console.log("Detected language:", language);
+        console.log("Language code:", langCode);
+        console.log("Synthesizing speech for language:", langSettings.code);
+        console.log("Voice name:", langSettings.voice);
+
         // Construct the request
         const request = {
             input: { text: text },
             voice: { 
-                languageCode: 'en-US',
-                name: 'en-US-Standard-D',
-                ssmlGender: 'NEUTRAL'
+                languageCode: langSettings.code,
+                name: langSettings.voice,
+                ssmlGender: 'FEMALE'
             },
             audioConfig: { audioEncoding: 'MP3' },
         };
@@ -284,7 +329,8 @@ function startListening() {
         audioType: 'raw',
         recorder: 'arecord',
         options: {
-            quiet: true
+            quiet: true,
+            // device: 'hw:4,0'  // Razer Seiren Mini
         }
     });
 
@@ -316,30 +362,32 @@ function startListening() {
                     // Wake word detected
                     console.log("Wake word detected!");
                     // say.speak("Yes, how can I help you?");
+                    synthesizeSpeech("Yes, how can I help you?", "english");
                     
                     // Set flag to prevent multiple simultaneous recordings
                     isProcessingVoice = true;
 
                     try {
                         // Wait a moment for the response to be spoken
-                        await new Promise(resolve => setTimeout(resolve, 1500));
+                        await new Promise(resolve => setTimeout(resolve, 2000));
                         
                         // Record user's voice input
                         const audioFilePath = await recordUserInput();
                         
                         // Transcribe the audio
                         const transcription = await transcribeAudio(audioFilePath);
-                        console.log("Transcribed text:", transcription);
+                        console.log("Transcribed text:", transcription.text);
+                        console.log("Detected language:", transcription.language);
                         
                         // Process with ChatGPT
-                        await processConversation(transcription);
+                        await processConversation(transcription.text, transcription.language);
                         
                         // Clean up the audio file
                         fs.unlinkSync(audioFilePath);
                     } catch (error) {
                         console.error("Error processing voice input:", error);
                         // say.speak("Sorry, there was an error with the recording. Please try again.");
-                        await synthesizeSpeech("Sorry, there was an error with the recording. Please try again.");
+                        await synthesizeSpeech("Sorry, there was an error with the recording. Please try again.", transcription.language);
                     } finally {
                         isProcessingVoice = false;
                     }
