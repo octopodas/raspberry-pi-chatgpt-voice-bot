@@ -304,12 +304,16 @@ async function synthesizeSpeech(text, language) {
         
         // Play the audio using system audio player
         const { exec } = require('child_process');
-        exec(`play ${tempFile}`, (error) => {
-            if (error) {
-                console.error('Error playing audio:', error);
-            }
-            // Clean up the temporary file
-            fs.unlinkSync(tempFile);
+        await new Promise((resolve, reject) => {
+            exec(`play ${tempFile}`, (error) => {
+                if (error) {
+                    console.error('Error playing audio:', error);
+                    reject(error);
+                }
+                // Clean up the temporary file
+                fs.unlinkSync(tempFile);
+                resolve();
+            });
         });
     } catch (error) {
         console.error('Error synthesizing speech:', error);
@@ -359,18 +363,14 @@ function startListening() {
                 // Process the frame with Porcupine
                 const keywordIndex = porcupine.process(frame);
                 if (keywordIndex >= 0 && !isProcessingVoice) {
-                    // Wake word detected
                     console.log("Wake word detected!");
-                    // say.speak("Yes, how can I help you?");
-                    synthesizeSpeech("Yes, how can I help you?", "english");
+
+                    await synthesizeSpeech("Yes, how can I help you?", "english");
                     
                     // Set flag to prevent multiple simultaneous recordings
                     isProcessingVoice = true;
 
                     try {
-                        // Wait a moment for the response to be spoken
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        
                         // Record user's voice input
                         const audioFilePath = await recordUserInput();
                         
