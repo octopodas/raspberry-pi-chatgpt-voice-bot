@@ -1,8 +1,7 @@
 require('dotenv').config();
-
+const fs = require("fs"); // Add file system import
 const record = require("node-record-lpcm16");
 const axios = require("axios");
-const fs = require("fs");
 const path = require('path');
 const FormData = require('form-data');
 const { Porcupine } = require("@picovoice/porcupine-node");
@@ -34,6 +33,24 @@ const frameLength = porcupine.frameLength; // The number of samples per frame
 const sampleRate = porcupine.sampleRate;   // Should be 16000
 console.log(`Porcupine initialized with frameLength=${frameLength}, sampleRate=${sampleRate}`);
 
+// Load system instructions from file
+const systemInstructions = fs.readFileSync('system-instructions.txt', 'utf8');
+
+// Function to remove markdown formatting from text
+function cleanMarkdownFormatting(text) {
+    return text
+        .replace(/\*\*/g, '') // Remove bold formatting
+        .replace(/\*/g, '')   // Remove italic formatting
+        .replace(/\_\_/g, '') // Remove alternate bold formatting
+        .replace(/\_/g, '')   // Remove alternate italic formatting
+        .replace(/\`\`\`[\s\S]*?\`\`\`/g, '') // Remove code blocks
+        .replace(/\`/g, '')   // Remove inline code
+        .replace(/\#\#\#/g, '') // Remove h3 headers
+        .replace(/\#\#/g, '')   // Remove h2 headers
+        .replace(/\#/g, '')     // Remove h1 headers
+        .trim();
+}
+
 // Function to handle ChatGPT conversation
 async function processConversation(input, language) {
     try {
@@ -41,15 +58,21 @@ async function processConversation(input, language) {
         const response = await axios.post(
             "https://api.openai.com/v1/chat/completions",
             {
+                //model: "gpt-4-turbo-preview",
                 model: "gpt-4o",
-                messages: [{ role: "user", content: input }],
+                messages: [
+                    { role: "system", content: systemInstructions },
+                    { role: "user", content: input }
+                ],
             },
             {
                 headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
             }
         );
 
-        const chatResponse = response.data.choices[0].message.content;
+        let chatResponse = response.data.choices[0].message.content;
+        chatResponse = cleanMarkdownFormatting(chatResponse);
+        
         console.log("ChatGPT:", chatResponse);
 
         // say.speak(chatResponse);
@@ -284,37 +307,48 @@ async function synthesizeSpeech(text, language) {
         console.log("Synthesizing speech for language:", langSettings.code);
         console.log("Voice name:", langSettings.voice);
 
-        // Construct the request
-        const request = {
-            input: { text: text },
-            voice: { 
-                languageCode: langSettings.code,
-                name: langSettings.voice,
-                ssmlGender: 'FEMALE'
-            },
-            audioConfig: { audioEncoding: 'MP3' },
-        };
+        // Split text into phrases using punctuation marks
+        const phrases = text.match(/[^.!?]+[.!?]+/g) || [text];
 
-        // Perform the text-to-speech request
-        const [response] = await client.synthesizeSpeech(request);
+        // Process each phrase sequentially
+        for (const phrase of phrases) {
+            const trimmedPhrase = phrase.trim();
+            if (!trimmedPhrase) continue;
 
-        // Save to a temporary file and play it
-        const tempFile = './temp-speech.mp3';
-        await fs.promises.writeFile(tempFile, response.audioContent);
-        
-        // Play the audio using system audio player
-        const { exec } = require('child_process');
-        await new Promise((resolve, reject) => {
-            exec(`play ${tempFile}`, (error) => {
-                if (error) {
-                    console.error('Error playing audio:', error);
-                    reject(error);
-                }
-                // Clean up the temporary file
-                fs.unlinkSync(tempFile);
-                resolve();
+            console.log("Processing phrase:", trimmedPhrase);
+
+            // Construct the request for this phrase
+            const request = {
+                input: { text: trimmedPhrase },
+                voice: { 
+                    languageCode: langSettings.code,
+                    name: langSettings.voice,
+                    ssmlGender: 'FEMALE'
+                },
+                audioConfig: { audioEncoding: 'MP3' },
+            };
+
+            // Perform the text-to-speech request
+            const [response] = await client.synthesizeSpeech(request);
+
+            // Save to a temporary file and play it
+            const tempFile = './temp-speech.mp3';
+            await fs.promises.writeFile(tempFile, response.audioContent);
+            
+            // Play the audio using system audio player
+            await new Promise((resolve, reject) => {
+                const { exec } = require('child_process');
+                exec(`play ${tempFile}`, (error) => {
+                    if (error) {
+                        console.error('Error playing audio:', error);
+                        reject(error);
+                    }
+                    // Clean up the temporary file
+                    fs.unlinkSync(tempFile);
+                    resolve();
+                });
             });
-        });
+        }
     } catch (error) {
         console.error('Error synthesizing speech:', error);
     }
